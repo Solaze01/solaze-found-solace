@@ -35,13 +35,47 @@ $("[data-reset]")?.addEventListener("click", () => { preferences = { ...defaults
 if ("speechSynthesis" in window && $("[data-story-content]")) {
   const synth = window.speechSynthesis, status = $("[data-speech-status]"), voiceSelect = $("[data-speech-voice]");
   const buttons = Object.fromEntries($$("[data-speech-action]").map(b => [b.dataset.speechAction, b]));
-  let utterance;
+  let utterance, segments = [], stopped = true;
   const refreshVoices = () => { const voices = synth.getVoices(); const old = voiceSelect.value; voiceSelect.replaceChildren(new Option("Device default", "")); voices.forEach((v, i) => voiceSelect.add(new Option(`${v.name} (${v.lang})`, String(i)))); if (old) voiceSelect.value = old; };
   refreshVoices(); synth.addEventListener("voiceschanged", refreshVoices);
-  buttons.play.addEventListener("click", () => { synth.cancel(); utterance = new SpeechSynthesisUtterance($("[data-story-content]").innerText); utterance.rate = Number($("[data-speech-speed]").value); const voice = synth.getVoices()[Number(voiceSelect.value)]; if (voiceSelect.value && voice) utterance.voice = voice; utterance.onend = () => { status.textContent = "Finished reading."; buttons.pause.disabled = buttons.resume.disabled = buttons.stop.disabled = true; }; utterance.onerror = () => { status.textContent = "Read aloud is unavailable on this device."; }; synth.speak(utterance); status.textContent = "Reading aloud…"; buttons.pause.disabled = false; buttons.stop.disabled = false; buttons.resume.disabled = true; });
+  const clearReadingMarker = () => {
+    $$("[data-story-content] .is-speaking").forEach(el => el.classList.remove("is-speaking"));
+    if (window.CSS?.highlights) CSS.highlights.delete("solaze-current-word");
+  };
+  const makeWordRange = (element, offset, length) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node, remaining = offset;
+    while ((node = walker.nextNode())) {
+      if (remaining <= node.textContent.length) {
+        const from = Math.max(0, remaining), size = Math.max(1, Math.min(length || 1, node.textContent.length - from));
+        const range = document.createRange(); range.setStart(node, from); range.setEnd(node, from + size); return range;
+      }
+      remaining -= node.textContent.length;
+    }
+    return null;
+  };
+  const speakSegment = index => {
+    if (stopped) return;
+    if (index >= segments.length) { stopped = true; clearReadingMarker(); status.textContent = "Finished reading."; buttons.pause.disabled = buttons.resume.disabled = buttons.stop.disabled = true; return; }
+    const element = segments[index], text = element.textContent.trim();
+    if (!text) { speakSegment(index + 1); return; }
+    utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = Number($("[data-speech-speed]").value);
+    const voice = synth.getVoices()[Number(voiceSelect.value)]; if (voiceSelect.value && voice) utterance.voice = voice;
+    utterance.onstart = () => { clearReadingMarker(); element.classList.add("is-speaking"); element.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" }); status.textContent = `Reading paragraph ${index + 1} of ${segments.length}.`; };
+    utterance.onboundary = event => {
+      if (event.name !== "word" || !window.CSS?.highlights || !window.Highlight) return;
+      const range = makeWordRange(element, event.charIndex, event.charLength);
+      if (range) CSS.highlights.set("solaze-current-word", new Highlight(range));
+    };
+    utterance.onend = () => { element.classList.remove("is-speaking"); if (window.CSS?.highlights) CSS.highlights.delete("solaze-current-word"); speakSegment(index + 1); };
+    utterance.onerror = event => { if (stopped || event.error === "canceled" || event.error === "interrupted") return; stopped = true; clearReadingMarker(); status.textContent = "Read aloud is unavailable on this device."; buttons.pause.disabled = buttons.resume.disabled = buttons.stop.disabled = true; };
+    synth.speak(utterance);
+  };
+  buttons.play.addEventListener("click", () => { synth.cancel(); clearReadingMarker(); segments = $$('[data-story-content] h2, [data-story-content] p'); stopped = false; buttons.pause.disabled = false; buttons.stop.disabled = false; buttons.resume.disabled = true; speakSegment(0); });
   buttons.pause.addEventListener("click", () => { synth.pause(); status.textContent = "Paused."; buttons.pause.disabled = true; buttons.resume.disabled = false; });
   buttons.resume.addEventListener("click", () => { synth.resume(); status.textContent = "Reading aloud…"; buttons.pause.disabled = false; buttons.resume.disabled = true; });
-  buttons.stop.addEventListener("click", () => { synth.cancel(); status.textContent = "Stopped."; buttons.pause.disabled = buttons.resume.disabled = buttons.stop.disabled = true; });
+  buttons.stop.addEventListener("click", () => { stopped = true; synth.cancel(); clearReadingMarker(); status.textContent = "Stopped."; buttons.pause.disabled = buttons.resume.disabled = buttons.stop.disabled = true; });
 }
 
 $("[data-share]")?.addEventListener("click", async () => {
