@@ -1,0 +1,12 @@
+# Local database and credentials
+*.db
+.env
+.env.*
+!.env.example
+
+# Local deployment and tool output
+.vercel/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+*.log

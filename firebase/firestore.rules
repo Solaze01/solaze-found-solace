@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function anonymousReader() {
+      return request.auth != null
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    match /readers/{readerId} {
+      allow read: if anonymousReader();
+      allow create: if anonymousReader() && request.auth.uid == readerId
+        && request.resource.data.keys().hasOnly(['createdAt']);
+      allow update, delete: if false;
+    }
+
+    match /replies/{replyId} {
+      allow read: if true;
+      allow create: if anonymousReader()
+        && request.resource.data.keys().hasOnly(['body', 'author', 'createdAt'])
+        && request.resource.data.author == 'Anonymous'
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 3
+        && request.resource.data.body.size() <= 500;
+      allow update, delete: if false;
+
+      match /reactions/{readerId} {
+        allow read: if true;
+        allow create, update: if anonymousReader() && request.auth.uid == readerId
+          && request.resource.data.keys().hasOnly(['reaction', 'updatedAt'])
+          && request.resource.data.reaction in ['heart', 'thoughtful', 'support'];
+        allow delete: if anonymousReader() && request.auth.uid == readerId;
+      }
+    }
+  }
+}
