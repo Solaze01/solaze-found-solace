@@ -52,7 +52,21 @@ $("[data-share]")?.addEventListener("click", async () => {
 
 const communityStatus = $("[data-community-status]");
 const isConfigured = firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId;
-if (isConfigured) initializeCommunity().catch(error => { console.error("Community service setup error", error); communityStatus.textContent = "The community space is temporarily unavailable. Please try again later."; });
+function setCommunityUnavailable(message) {
+  communityStatus.hidden = false;
+  communityStatus.textContent = message;
+  $("[data-read-count]").textContent = "—";
+  if ($("[data-reader-label]")) $("[data-reader-label]").textContent = "Firebase setup needed";
+  $("[data-reply-count]").textContent = "Unavailable";
+  const form = $("[data-reply-form]");
+  if (form) { form.querySelector("textarea").disabled = true; form.querySelector("button[type=submit]").disabled = true; }
+}
+if (isConfigured) {
+  communityStatus.textContent = "Connecting to the community…";
+  initializeCommunity().catch(error => { console.error("Community service setup error", error); setCommunityUnavailable("Firebase could not connect. Check your project settings, anonymous sign-in, Firestore rules, and Vercel domain."); });
+} else {
+  setCommunityUnavailable("Reader counts and replies are offline until Firebase is configured for this site.");
+}
 
 async function initializeCommunity() {
   const [appSdk, authSdk, storeSdk] = await Promise.all([
@@ -66,15 +80,14 @@ async function initializeCommunity() {
   });
   const readerRef = storeSdk.doc(db, "readers", user.uid);
   await storeSdk.runTransaction(db, async tx => { const snap = await tx.get(readerRef); if (!snap.exists()) tx.set(readerRef, { createdAt: storeSdk.serverTimestamp() }); });
-  try { const count = await storeSdk.getCountFromServer(storeSdk.collection(db, "readers")); $("[data-read-count]").textContent = count.data().count.toLocaleString(); }
-  catch { $("[data-read-count]").textContent = "—"; }
+  try { const count = await storeSdk.getCountFromServer(storeSdk.collection(db, "readers")); $("[data-read-count]").textContent = count.data().count.toLocaleString(); $("[data-reader-label]").textContent = "readers"; }
+  catch { $("[data-read-count]").textContent = "—"; $("[data-reader-label]").textContent = "Count unavailable"; }
 
   const replyCollection = storeSdk.collection(db, "replies"), replyList = $("[data-reply-list]");
   const reactionTypes = [["heart", "♡"], ["thoughtful", "Thoughtful"], ["support", "Support"]];
   const esc = value => { const node = document.createElement("span"); node.textContent = value; return node.innerHTML; };
   function renderReplies(docs) {
     const ordered = docs.slice().sort((a, b) => b.createdAt?.toMillis?.() - a.createdAt?.toMillis?.()).slice(0, 30);
-    $("[data-reply-count]").textContent = docs.length === 30 ? "30+ replies" : `${docs.length} ${docs.length === 1 ? "reply" : "replies"}`;
     if (!ordered.length) { replyList.innerHTML = '<p class="no-replies">No replies yet. You can be the first to respond with care.</p>'; return; }
     replyList.innerHTML = ordered.map(d => { const val = d.data(), when = val.createdAt?.toDate?.() || new Date(); return `<article class="reply" id="reply-${d.id}"><div class="reply-byline"><strong>Anonymous</strong><time datetime="${when.toISOString()}">${when.toLocaleDateString()}</time></div><p class="reply-body">${esc(val.body || "")}</p><div class="reaction-list" data-reactions="${d.id}"></div></article>`; }).join("");
     ordered.forEach(async d => {
@@ -91,11 +104,14 @@ async function initializeCommunity() {
       } catch { root.textContent = "Reactions unavailable"; }
     });
   }
-  storeSdk.getCountFromServer(replyCollection).then(snap => {
-    const n = snap.data().count;
-    $("[data-reply-count]").textContent = `${n.toLocaleString()} ${n === 1 ? "reply" : "replies"}`;
-  }).catch(() => {});
-  storeSdk.onSnapshot(storeSdk.query(replyCollection, storeSdk.orderBy("createdAt", "desc"), storeSdk.limit(30)), snap => { renderReplies(snap.docs); communityStatus.hidden = true; }, () => { communityStatus.hidden = false; communityStatus.textContent = "Could not load replies. Please try again later."; });
+  storeSdk.onSnapshot(storeSdk.query(replyCollection, storeSdk.orderBy("createdAt", "desc"), storeSdk.limit(30)), snap => {
+    renderReplies(snap.docs);
+    storeSdk.getCountFromServer(replyCollection).then(countSnap => {
+      const n = countSnap.data().count;
+      $("[data-reply-count]").textContent = `${n.toLocaleString()} ${n === 1 ? "reply" : "replies"}`;
+    }).catch(() => { $("[data-reply-count]").textContent = "Count unavailable"; });
+    communityStatus.hidden = true;
+  }, () => { communityStatus.hidden = false; communityStatus.textContent = "Could not load replies. Check the Firestore rules and try again."; });
   $("[data-reply-form]").addEventListener("submit", async event => {
     event.preventDefault(); const form = event.currentTarget, body = form.elements.body.value.trim(), submit = form.querySelector("button[type=submit]");
     if (body.length < 3 || body.length > 500) return;
